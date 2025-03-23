@@ -27,6 +27,9 @@ RUNPOD_URL = os.getenv("RUNPOD_URL", "")
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY", "")
 RUNPOD_ENABLE = os.getenv("RUNPOD_ENABLE", "false").lower() == "true"
 
+# Ambil timeout dari environment variable, default ke 600 detik (10 menit)
+TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 600))
+
 @embeddings_bp.route("/v1/embeddings", methods=["POST"])
 @authenticate
 def embed():
@@ -59,7 +62,7 @@ def embed():
                 "Authorization": f"Bearer {RUNPOD_API_KEY}",
                 "Content-Type": "application/json",
             }
-            response = requests.post(RUNPOD_URL, json={"input": texts}, headers=headers, timeout=10)
+            response = requests.post(RUNPOD_URL, json={"input": texts}, headers=headers, timeout=TIMEOUT)
 
             # Return the external service's response directly
             return jsonify(response.json()), response.status_code
