@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Load API keys from environment variable (comma-separated values)
-API_KEYS = os.getenv("API_KEYS", "xyx124").split(",")
+API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "adk_default").split(",")]
 print("Loaded API_KEYS:", API_KEYS)
 
 def authenticate(f):

@@ -8,11 +8,15 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
+        - linux/arm64/v8
+        - linux/ppc64le       # IBM PowerPC 64-bit Little Endian
+        - linux/s390x         # IBM Z (mainframe)
+        - windows/amd64       # Windows 64-bit
     ports:
       - "5005:5005"
     environment:
       - FLASK_ENV=production
-      - API_KEYS=${API_KEYS:-adk_apikey}
+      - API_KEYS=${API_KEYS:-adk_defaul}
       - RUNPOD_URL=${RUNPOD_URL}
       - RUNPOD_API_KEY=${RUNPOD_API_KEY}
       - RUNPOD_ENABLE=${RUNPOD_ENABLE:-false}
