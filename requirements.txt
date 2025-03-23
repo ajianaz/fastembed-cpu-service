@@ -1,0 +1,6 @@
+Flask
+gunicorn
+fastembed==0.5.1
+tiktoken
+requests
+python-dotenv

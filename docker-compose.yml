@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  app:
+    container_name: fastembed-cpu-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    ports:
+      - "5005:5005"
+    environment:
+      - FLASK_ENV=production
+      - API_KEYS=${API_KEYS:-adk_apikey}
+      - RUNPOD_URL=${RUNPOD_URL}
+      - RUNPOD_API_KEY=${RUNPOD_API_KEY}
+      - RUNPOD_ENABLE=${RUNPOD_ENABLE:-false}
+      - MODEL_PATH=${MODEL_PATH:-./models}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
+      - OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
+      - NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-1}
+      - MKL_NUM_THREADS=${MKL_NUM_THREADS-1}
+      - GUNICORN_WORKERS=${GUNICORN_WORKERS:-2}  # Default workers for Gunicorn
+    volumes:
+      - .:/app

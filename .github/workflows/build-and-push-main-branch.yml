@@ -1,0 +1,53 @@
+name: Build and Push Docker Image (fastembed-cpu-service)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        run: echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Set Version
+        run: |
+          VERSION=${{ secrets.VERSION || '0.0.1' }}
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Cache Docker Layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-docker-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-docker-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build Docker Image with Cache
+        run: |
+          docker buildx build \
+            --cache-from=type=local,src=/tmp/.buildx-cache \
+            --cache-to=type=local,dest=/tmp/.buildx-cache-new \
+            -t ghcr.io/${{ github.actor }}/fastembed-cpu-service:$VERSION \
+            -t ghcr.io/${{ github.actor }}/fastembed-cpu-service:latest \
+            --load .
+
+      - name: Move Cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Push Docker Image with Version Tag
+        run: docker push ghcr.io/${{ github.actor }}/fastembed-cpu-service:$VERSION
+
+      - name: Push Docker Image with Branch Tag
+        run: docker push ghcr.io/${{ github.actor }}/fastembed-cpu-service:latest
