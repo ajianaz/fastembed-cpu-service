@@ -6,3 +6,4 @@ models
 *.pyo
 *.pyd
 .env
+app.log

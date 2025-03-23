@@ -99,7 +99,19 @@ def embed():
                 response = requests.post(RUNPOD_URL, json=payload, headers=headers, timeout=TIMEOUT)
 
                 logging.info("Response received from RunPod.")
-                return jsonify(response.json()), response.status_code
+                runpod_response = response.json()  # Parse JSON response
+                # logging.debug(f"RunPod response: {runpod_response}")
+
+                # Periksa apakah 'output' ada dalam respons
+                if "output" not in runpod_response or not isinstance(runpod_response["output"], list):
+                    logging.error("Invalid RunPod response structure.")
+                    return jsonify({"error": "Invalid RunPod response structure"}), 500
+
+                # Ambil elemen pertama dari 'output' dan kembalikan sebagai respons
+                return jsonify(runpod_response["output"][0]), response.status_code
+                # return jsonify(response.output[0].json()), response.status_code
+
+
             except requests.exceptions.RequestException as e:
                 logging.error(f"Failed to forward request to RunPod: {str(e)}")
                 return jsonify({"error": f"Failed to forward request: {str(e)}"}), 500

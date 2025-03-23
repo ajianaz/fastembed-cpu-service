@@ -1,7 +1,8 @@
-version: "3.9"
 services:
   app:
     container_name: fastembed-cpu-service
+    env_file:
+      - .env
     build:
       context: .
       dockerfile: Dockerfile
@@ -14,18 +15,19 @@ services:
         - windows/amd64       # Windows 64-bit
     ports:
       - "5005:5005"
-    environment:
-      - FLASK_ENV=production
-      - API_KEYS=${API_KEYS:-adk_defaul}
-      - RUNPOD_URL=${RUNPOD_URL}
-      - RUNPOD_API_KEY=${RUNPOD_API_KEY}
-      - RUNPOD_ENABLE=${RUNPOD_ENABLE:-false}
-      - MODEL_PATH=${MODEL_PATH:-./models}
-      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
-      - OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
-      - NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-1}
-      - MKL_NUM_THREADS=${MKL_NUM_THREADS-1}
-      - GUNICORN_WORKERS=${GUNICORN_WORKERS:-2}
-      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-600}
+    # environment:
+    #   - FLASK_ENV=production
+    #   - API_KEYS=${API_KEYS:-adk_defaul}
+    #   - RUNPOD_URL=${RUNPOD_URL}
+    #   - RUNPOD_API_KEY=${RUNPOD_API_KEY}
+    #   - RUNPOD_ENABLE=${RUNPOD_ENABLE:-false}
+    #   - MODEL_PATH=${MODEL_PATH:-./models}
+    #   - OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
+    #   - OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
+    #   - NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-1}
+    #   - MKL_NUM_THREADS=${MKL_NUM_THREADS:-1}
+    #   - GUNICORN_WORKERS=${GUNICORN_WORKERS:-2}
+    #   - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-600}
     volumes:
       - .:/app
+    entrypoint: ["sh", "-c", "env && gunicorn -w ${GUNICORN_WORKERS:-2} -k sync -b 0.0.0.0:5005 --threads 4 app:app"]
