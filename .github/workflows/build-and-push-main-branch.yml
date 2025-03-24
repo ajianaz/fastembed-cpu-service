@@ -18,7 +18,7 @@ jobs:
 
       - name: Set Version
         run: |
-          VERSION=${{ secrets.VERSION || '0.0.1' }}
+          VERSION=${{ secrets.VERSION || '0.0.2' }}
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       - name: Cache Docker Layers
