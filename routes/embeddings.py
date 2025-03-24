@@ -172,7 +172,7 @@ def embed():
         embeddings = list(model.embed(texts))  # Convert generator to list
 
         # Calculate token counts for each text
-        token_counts = [calculate_token_count(text, model=model_name) for text in texts]
+        token_counts = [calculate_token_count(text, model="gpt-4") for text in texts]
 
         # Format response
         response = {

@@ -24,10 +24,12 @@ def calculate_tokens_endpoint():
         return jsonify({"error": "Input must be a string"}), 400
 
     try:
+        # Calculate token count using the updated utility function
         token_count = calculate_token_count(input_text, model)
         return jsonify({
             "model": model,
-            "tokens": token_count
+            "tokens": token_count,
+            "note": "Token count is estimated for non-OpenAI models" if not model.startswith("gpt-") else "Token count is exact"
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Failed to calculate tokens: {str(e)}"}), 500

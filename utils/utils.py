@@ -9,10 +9,15 @@ def calculate_token_count(text, model="gpt-4"):
     :return: The number of tokens.
     """
     try:
-        # Load encoding based on the model
-        encoding = tiktoken.encoding_for_model(model)
-        # Encode the text to tokens
-        tokens = encoding.encode(text)
-        return len(tokens)
+        # Jika model adalah OpenAI model, gunakan tiktoken
+        if model.startswith("gpt-"):
+            import tiktoken
+            encoding = tiktoken.encoding_for_model(model)
+            tokens = encoding.encode(text)
+            return len(tokens)
+
+        # Jika bukan OpenAI model, gunakan pendekatan sederhana
+        avg_chars_per_token = 4  # Asumsi rata-rata 4 karakter per token
+        return len(text) // avg_chars_per_token
     except Exception as e:
         raise ValueError(f"Error calculating tokens: {e}")
