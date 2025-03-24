@@ -30,19 +30,12 @@ TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 600))  # Default 10 menit
 # Cache model yang dimuat
 LOADED_MODELS = {}
 
-# Fungsi untuk validasi model yang tersedia
+# Fungsi validasi model pada startup
 def validate_models(available_models, model_path):
     """
-    Validates the models listed in the environment against the supported models in fastembed.
+    Validates all available models at application startup.
     """
-    supported_models = TextEmbedding.list_supported_models()
-    logging.info(f"Supported models from fastembed: {supported_models}")
-
     for model_name in available_models:
-        if model_name not in supported_models:
-            logging.error(f"Model '{model_name}' is not supported by fastembed.")
-            raise ValueError(f"Model '{model_name}' is not supported by fastembed.")
-
         try:
             logging.info(f"Validating model '{model_name}'...")
             _ = TextEmbedding(model_name=model_name, cache_dir=model_path)
