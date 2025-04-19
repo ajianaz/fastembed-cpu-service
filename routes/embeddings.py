@@ -1,4 +1,3 @@
-# Import lainnya...
 from flask import Blueprint, request, jsonify
 from fastembed import TextEmbedding
 from utils.authentication import authenticate
@@ -25,72 +24,12 @@ logging.basicConfig(
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 AVAILABLE_MODELS = os.getenv("AVAILABLE_MODELS", "").split(",")
 MODEL_PATH = os.getenv("MODEL_PATH", "./models")
-MAX_CACHED_MODELS = int(os.getenv("MAX_CACHED_MODELS", 2))  # Batas jumlah model di cache
-TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 600))  # Default 10 menit
+MAX_CACHED_MODELS = int(os.getenv("MAX_CACHED_MODELS", 2))
+TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 600))
 RUNPOD_URL = os.getenv("RUNPOD_URL", "")
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY", "")
 RUNPOD_ENABLE = os.getenv("RUNPOD_ENABLE", "false").lower() == "true"
 MAX_TEXTS_FOR_LOCAL_PROCESSING = int(os.getenv("MAX_TEXTS_FOR_LOCAL_PROCESSING", 1))
-
-# Cache model yang dimuat
-LOADED_MODELS = {}
-
-# Fungsi validasi model pada startup
-def validate_models(available_models, model_path):
-    """
-    Validates all available models at application startup.
-    """
-    for model_name in available_models:
-        try:
-            logging.info(f"Validating model '{model_name}'...")
-            _ = TextEmbedding(model_name=model_name, cache_dir=model_path)
-            logging.info(f"Model '{model_name}' is valid and ready.")
-        except Exception as e:
-            logging.error(f"Model '{model_name}' cannot be loaded: {str(e)}")
-            raise ValueError(f"Invalid model '{model_name}' in AVAILABLE_MODELS: {str(e)}")
-
-# Validasi model pada startup
-try:
-    validate_models(AVAILABLE_MODELS, MODEL_PATH)
-except ValueError as e:
-    logging.critical(f"Model validation failed: {str(e)}")
-    raise e
-
-# Fungsi untuk memuat atau mengambil model
-def get_or_load_model(model_name):
-    """
-    Retrieve or load an embedding model. Validate against allowed models.
-    """
-    global LOADED_MODELS
-
-    # Validasi apakah model termasuk dalam daftar model yang diizinkan
-    if model_name not in AVAILABLE_MODELS:
-        logging.error(f"Requested model '{model_name}' is not in allowed models: {AVAILABLE_MODELS}")
-        raise ValueError(f"Model '{model_name}' is not available. Allowed models: {AVAILABLE_MODELS}")
-
-    # Jika model ada di cache, gunakan model tersebut
-    if model_name in LOADED_MODELS:
-        logging.info(f"Using cached model: {model_name}")
-        return LOADED_MODELS[model_name]
-
-    # Jika tidak ada, muat model baru
-    try:
-        logging.info(f"Loading new model: {model_name}")
-        model = TextEmbedding(model_name=model_name, cache_dir=MODEL_PATH)
-
-        # Tambahkan ke cache
-        LOADED_MODELS[model_name] = model
-
-        # Hapus model lama jika cache penuh
-        if len(LOADED_MODELS) > MAX_CACHED_MODELS:
-            oldest_model = next(iter(LOADED_MODELS))
-            del LOADED_MODELS[oldest_model]
-            logging.warning(f"Removed oldest model from cache: {oldest_model}")
-
-        return model
-    except Exception as e:
-        logging.error(f"Failed to load model '{model_name}': {str(e)}")
-        raise Exception(f"Failed to load model '{model_name}': {str(e)}")
 
 # Blueprint Flask
 embeddings_bp = Blueprint("embeddings", __name__)
@@ -115,10 +54,9 @@ def embed():
 
         # Ambil model dari request atau gunakan default
         model_name = data.get("model", DEFAULT_MODEL)
-        try:
-            model = get_or_load_model(model_name)
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
+        if model_name not in AVAILABLE_MODELS:
+            logging.error(f"Requested model '{model_name}' is not in allowed models: {AVAILABLE_MODELS}")
+            return jsonify({"error": f"Model '{model_name}' is not available. Allowed models: {AVAILABLE_MODELS}"}), 400
 
         # Handle single or batch text input
         texts = input_text if isinstance(input_text, list) else [input_text]
@@ -160,16 +98,15 @@ def embed():
                     logging.error("Invalid RunPod response structure.")
                     return jsonify({"error": "Invalid RunPod response structure"}), 500
 
-                # Ambil elemen pertama dari 'output' dan kembalikan sebagai respons
                 return jsonify(runpod_response["output"][0]), response.status_code
-                # return jsonify(response.output[0].json()), response.status_code
             except requests.exceptions.RequestException as e:
                 logging.error(f"Failed to forward request to RunPod: {str(e)}")
                 return jsonify({"error": f"Failed to forward request: {str(e)}"}), 500
 
-        # Generate embeddings locally
+        # Generate embeddings locally using a context manager
         logging.info(f"Generating embeddings using model: {model_name}")
-        embeddings = list(model.embed(texts))  # Convert generator to list
+        with TextEmbedding(model_name=model_name, cache_dir=MODEL_PATH) as model:
+            embeddings = list(model.embed(texts))  # Convert generator to list
 
         # Calculate token counts for each text
         token_counts = [calculate_token_count(text, model="gpt-4") for text in texts]
