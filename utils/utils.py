@@ -1,5 +1,17 @@
 import tiktoken
 
+# utils/utils.py (forwarder opsional agar tidak break import lama)
+from utils.chunking import (
+    count_tokens, count_tokens_batch,
+    chunk_text_by_tokens, auto_chunk_texts, attach_chunk_metadata
+)
+
+__all__ = [
+    "count_tokens", "count_tokens_batch",
+    "chunk_text_by_tokens", "auto_chunk_texts", "attach_chunk_metadata",
+]
+
+
 def calculate_token_count(text, model="gpt-4"):
     """
     Calculate the number of tokens in a given text using the specified model.
