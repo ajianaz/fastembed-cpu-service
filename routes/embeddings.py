@@ -22,7 +22,7 @@ logging.basicConfig(
 )
 
 # ======================================================================================
-# Konfigurasi Environment (TETAP: mempertahankan konteks aslimu)
+# Konfigurasi Environment (tetap mempertahankan konteks aslimu)
 # ======================================================================================
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 # Hindari item kosong dan spasi berlebih
@@ -30,9 +30,17 @@ AVAILABLE_MODELS = [m.strip() for m in os.getenv("AVAILABLE_MODELS", "").split("
 MODEL_PATH = os.getenv("MODEL_PATH", "./models")
 MAX_CACHED_MODELS = int(os.getenv("MAX_CACHED_MODELS", 1))  # Batas jumlah model di cache
 TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 600))            # Default 10 menit
+
+# Forwarding - MODAL (PRIORITAS)
+MODAL_URL = os.getenv("MODAL_URL", "")
+MODAL_API_KEY = os.getenv("MODAL_API_KEY", "")
+MODAL_ENABLE = os.getenv("MODAL_ENABLE", "false").strip().lower() in ("1","true","yes","on")
+
+# Forwarding - RunPod (FALLBACK)
 RUNPOD_URL = os.getenv("RUNPOD_URL", "")
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY", "")
-RUNPOD_ENABLE = os.getenv("RUNPOD_ENABLE", "false").lower() == "true"
+RUNPOD_ENABLE = os.getenv("RUNPOD_ENABLE", "false").strip().lower() in ("1","true","yes","on")
+
 MAX_TEXTS_FOR_LOCAL_PROCESSING = int(os.getenv("MAX_TEXTS_FOR_LOCAL_PROCESSING", 1))
 
 # Cache model yang dimuat
@@ -53,28 +61,23 @@ def _register_custom_e5_and_sanitize_available_models():
     needs_e5 = any(m == target_model for m in AVAILABLE_MODELS) or (DEFAULT_MODEL == target_model)
 
     if not needs_e5:
-        # Tidak perlu registrasi jika tidak dipakai.
         return
 
     try:
-        # Kelas-kelas ini tersedia di fastembed versi tertentu.
         from fastembed.common.model_description import PoolingType, ModelSource
     except Exception as e:
         logging.warning(
             "fastembed.common.model_description tidak tersedia (%s). "
             "Lewati registrasi custom e5.", e
         )
-        # Agar validate_models tidak gagal, hapus dari daftar jika ada
         if target_model in AVAILABLE_MODELS:
             AVAILABLE_MODELS = [m for m in AVAILABLE_MODELS if m != target_model]
             logging.warning(
                 "Menghapus '%s' dari AVAILABLE_MODELS karena registrasi tidak tersedia.",
                 target_model
             )
-        # Jika DEFAULT_MODEL adalah e5, biarkan validation nanti yang mengangkat error jelas
         return
 
-    # Cek apakah add_custom_model ada
     if not hasattr(TextEmbedding, "add_custom_model"):
         logging.warning(
             "FastEmbed tidak mendukung add_custom_model() pada versi saat ini. "
@@ -89,7 +92,6 @@ def _register_custom_e5_and_sanitize_available_models():
         return
 
     try:
-        # Registrasi model custom e5
         TextEmbedding.add_custom_model(
             model=target_model,
             pooling=PoolingType.MEAN,                # e5 pakai mean pooling
@@ -101,7 +103,6 @@ def _register_custom_e5_and_sanitize_available_models():
         logging.info("Custom model '%s' terdaftar di FastEmbed.", target_model)
     except Exception as e:
         logging.warning("Gagal register custom model e5: %s", e)
-        # Untuk mencegah crash saat validasi, buang dari AVAILABLE_MODELS jika ada
         if target_model in AVAILABLE_MODELS:
             AVAILABLE_MODELS = [m for m in AVAILABLE_MODELS if m != target_model]
             logging.warning(
@@ -136,7 +137,7 @@ except ValueError as e:
     raise e
 
 # ======================================================================================
-# Loader model (TETAP konteks awal, hanya variabel globalnya yang sama)
+# Loader model (TETAP konteks awal)
 # ======================================================================================
 def get_or_load_model(model_name):
     """
@@ -144,25 +145,20 @@ def get_or_load_model(model_name):
     """
     global LOADED_MODELS
 
-    # Validasi apakah model termasuk dalam daftar model yang diizinkan
     if model_name not in AVAILABLE_MODELS:
         logging.error(f"Requested model '{model_name}' is not in allowed models: {AVAILABLE_MODELS}")
         raise ValueError(f"Model '{model_name}' is not available. Allowed models: {AVAILABLE_MODELS}")
 
-    # Jika model ada di cache, gunakan model tersebut
     if model_name in LOADED_MODELS:
         logging.info(f"Using cached model: {model_name}")
         return LOADED_MODELS[model_name]
 
-    # Jika tidak ada, muat model baru
     try:
         logging.info(f"Loading new model: {model_name}")
         model = TextEmbedding(model_name=model_name, cache_dir=MODEL_PATH)
 
-        # Tambahkan ke cache
         LOADED_MODELS[model_name] = model
 
-        # Hapus model lama jika cache penuh
         if len(LOADED_MODELS) > MAX_CACHED_MODELS:
             oldest_model = next(iter(LOADED_MODELS))
             if oldest_model != model_name:
@@ -173,6 +169,112 @@ def get_or_load_model(model_name):
     except Exception as e:
         logging.error(f"Failed to load model '{model_name}': {str(e)}")
         raise Exception(f"Failed to load model '{model_name}': {str(e)}")
+
+# ======================================================================================
+# Helpers: normalisasi respons OpenAI + forwarders Modal/RunPod
+# ======================================================================================
+def _make_openai_embedding_response(model_name, embeddings_list, token_counts):
+    """
+    Bentuk respons OpenAI-compatible.
+    embeddings_list: List[List[float]]
+    token_counts:    List[int]
+    """
+    data_items = []
+    for i, vec in enumerate(embeddings_list):
+        # vec kemungkinan numpy array → pastikan list
+        vlist = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+        data_items.append({
+            "object": "embedding",
+            "index": i,
+            "embedding": vlist
+        })
+    resp = {
+        "object": "list",
+        "model": model_name,
+        "data": data_items,
+        "usage": {
+            "token_counts": token_counts,             # tambahan custom (per input)
+            "prompt_tokens": int(sum(token_counts)),
+            "total_tokens": int(sum(token_counts)),
+        },
+    }
+    return resp
+
+def _enrich_external_openai_response(resp_json, token_counts):
+    """
+    External (Modal/RunPod) biasanya sudah kirim OpenAI-format.
+    Kita tambahkan 'usage.token_counts' (dan isi usage jika kosong).
+    """
+    if not isinstance(resp_json, dict):
+        return resp_json
+
+    usage = resp_json.get("usage") or {}
+    usage.setdefault("prompt_tokens", int(sum(token_counts)))
+    usage.setdefault("total_tokens", int(sum(token_counts)))
+    usage["token_counts"] = token_counts
+    resp_json["usage"] = usage
+    return resp_json
+
+def _forward_to_modal(texts, model_name):
+    if not (MODAL_ENABLE and MODAL_URL and MODAL_API_KEY):
+        return None, "Modal disabled or not configured"
+
+    payload = {
+        "input": {
+            "openai_route": "/v1/embeddings",
+            "openai_input": {
+                "input": texts,
+                "model": model_name
+            }
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {MODAL_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        logging.info("Forwarding request to Modal.")
+        r = requests.post(MODAL_URL, json=payload, headers=headers, timeout=TIMEOUT)
+        r.raise_for_status()
+        j = r.json()
+        if "output" in j and isinstance(j["output"], list) and j["output"]:
+            return j["output"][0], None
+        # Jika provider sudah langsung return OpenAI-style tanpa 'output'
+        if "data" in j:
+            return j, None
+        return None, "Invalid Modal response structure"
+    except Exception as e:
+        return None, f"Modal forward error: {e}"
+
+def _forward_to_runpod(texts, model_name):
+    if not (RUNPOD_ENABLE and RUNPOD_URL and RUNPOD_API_KEY):
+        return None, "RunPod disabled or not configured"
+
+    payload = {
+        "input": {
+            "openai_route": "/v1/embeddings",
+            "openai_input": {
+                "input": texts,
+                "model": model_name
+            }
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {RUNPOD_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        logging.info("Forwarding request to RunPod.")
+        r = requests.post(RUNPOD_URL, json=payload, headers=headers, timeout=TIMEOUT)
+        r.raise_for_status()
+        j = r.json()
+        if "output" in j and isinstance(j["output"], list) and j["output"]:
+            return j["output"][0], None
+        if "data" in j:
+            return j, None
+        return None, "Invalid RunPod response structure"
+    except Exception as e:
+        return None, f"RunPod forward error: {e}"
 
 # ======================================================================================
 # Blueprint Flask (TETAP konteks awal)
@@ -204,78 +306,40 @@ def embed():
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
 
-        # Handle single atau batch
+        # Normalize texts
         texts = input_text if isinstance(input_text, list) else [input_text]
 
+        # Hitung token_counts di awal supaya bisa disematkan terlepas dari jalur proses
+        # (pakai model "gpt-4" sebagai estimator seperti sebelumnya)
+        token_counts = [calculate_token_count(t, model="gpt-4") for t in texts]
+
+        # Jika melebihi batas local → PRIORITAS Modal, fallback RunPod
         if len(texts) > MAX_TEXTS_FOR_LOCAL_PROCESSING:
-            if not RUNPOD_ENABLE:
-                logging.error("RunPod is disabled and cannot process multiple texts.")
-                return jsonify({"error": "RunPod is disabled and cannot process multiple texts"}), 400
+            # 1) Modal
+            modal_resp, modal_err = _forward_to_modal(texts, model_name)
+            if modal_resp is not None:
+                enriched = _enrich_external_openai_response(modal_resp, token_counts)
+                return jsonify(enriched), 200
+            logging.error(modal_err or "Modal forwarding failed")
 
-            if not RUNPOD_URL or not RUNPOD_API_KEY:
-                logging.error("RunPod URL or API key is not configured.")
-                return jsonify({"error": "RunPod URL or API key is not configured"}), 500
+            # 2) RunPod
+            runpod_resp, runpod_err = _forward_to_runpod(texts, model_name)
+            if runpod_resp is not None:
+                enriched = _enrich_external_openai_response(runpod_resp, token_counts)
+                return jsonify(enriched), 200
+            logging.error(runpod_err or "RunPod forwarding failed")
 
-            try:
-                # Build the payload for RunPod
-                payload = {
-                    "input": {
-                        "openai_route": "/v1/embeddings",
-                        "openai_input": {
-                            "input": texts,
-                            "model": model_name
-                        }
-                    }
-                }
+            # 3) Keduanya gagal
+            return jsonify({"error": "All external forwarders failed", "modal_error": modal_err, "runpod_error": runpod_err}), 502
 
-                # Forward request ke RunPod
-                headers = {
-                    "Authorization": f"Bearer {RUNPOD_API_KEY}",
-                    "Content-Type": "application/json",
-                }
-                logging.info("Forwarding request to RunPod.")
-                response = requests.post(RUNPOD_URL, json=payload, headers=headers, timeout=TIMEOUT)
+        # Jalur local (<= batas)
+        logging.info(f"Generating embeddings locally using model: {model_name}")
+        embeddings = list(model.embed(texts))  # generator → list
 
-                logging.info("Response received from RunPod.")
-                runpod_response = response.json()  # Parse JSON response
-
-                # Validasi struktur response
-                if "output" not in runpod_response or not isinstance(runpod_response["output"], list):
-                    logging.error("Invalid RunPod response structure.")
-                    return jsonify({"error": "Invalid RunPod response structure"}), 500
-
-                # Ambil elemen pertama
-                return jsonify(runpod_response["output"][0]), response.status_code
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Failed to forward request to RunPod: {str(e)}")
-                return jsonify({"error": f"Failed to forward request: {str(e)}"}), 500
-
-        # Generate embeddings lokal
-        logging.info(f"Generating embeddings using model: {model_name}")
-        embeddings = list(model.embed(texts))  # Convert generator to list
-
-        # Hitung token count per text
-        token_counts = [calculate_token_count(text, model="gpt-4") for text in texts]
-
-        # Format response
-        response = {
-            "data": [
-                {
-                    "object": "embedding",
-                    "embedding": embeddings[i].tolist(),
-                    "index": i,
-                }
-                for i in range(len(embeddings))
-            ],
-            "model": model_name,
-            "usage": {
-                "input_text_count": len(texts),
-                "prompt_tokens": sum(token_counts),
-                "total_tokens": sum(token_counts),
-            },
-        }
-        logging.info("Embeddings generated successfully.")
-        return jsonify(response)
+        # Respons OpenAI-compatible + token_counts
+        response = _make_openai_embedding_response(model_name, embeddings, token_counts)
+        logging.info("Embeddings generated successfully (local).")
+        return jsonify(response), 200
 
     except Exception as e:
         logging.critical(f"Unexpected error in embedding endpoint: {str(e)}")
