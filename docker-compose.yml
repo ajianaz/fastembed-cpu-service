@@ -15,6 +15,8 @@ services:
         - windows/amd64       # Windows 64-bit
     ports:
       - "5005:5005"
+    networks:
+      - internal-net
     # environment:
     #   - FLASK_ENV=production
     #   - API_KEYS=${API_KEYS:-adk_defaul}
@@ -31,3 +33,8 @@ services:
     volumes:
       - .:/app
     entrypoint: ["sh", "-c", "env && gunicorn -w ${GUNICORN_WORKERS:-2} -k sync -b 0.0.0.0:5005 --threads 4 app:app"]
+
+
+networks:
+  internal-net:
+    external: true
