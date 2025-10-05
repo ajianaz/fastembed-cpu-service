@@ -331,34 +331,79 @@ def _forward_to_runpod(texts, model_name):
     if not (RUNPOD_ENABLE and RUNPOD_URL and RUNPOD_API_KEY):
         return None, "RunPod disabled or not configured"
 
-    payload = {
-        "input": {
-            "openai_route": "/v1/embeddings",
-            "openai_input": {
-                "input": texts,
-                "model": model_name
-            }
-        }
-    }
+    # Pastikan 'texts' selalu list[str] agar konsisten
+    if isinstance(texts, str):
+        texts = [texts]
+    elif not isinstance(texts, list):
+        texts = [str(texts)]
+
     headers = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
         "Content-Type": "application/json",
     }
-    try:
-        logging.info("Forwarding request to RunPod.")
-        r = requests.post(RUNPOD_URL, json=payload, headers=headers, timeout=TIMEOUT)
-        r.raise_for_status()
-        j = r.json()
 
+    # ---- Attempt A: wrapper standar (paling umum di template RunPod) ----
+    payload_a = {
+        "input": {
+            "openai_route": "/v1/embeddings",
+            "openai_input": {
+                "input": texts,      # <- list di dalam "openai_input", ini benar
+                "model": model_name
+            }
+        }
+    }
+
+    try:
+        logging.info("Forwarding request to RunPod. Attempt A (wrapper).")
+        logging.debug("RunPod payload A (types): input=%s, openai_input.input=%s",
+                      type(payload_a["input"]).__name__,
+                      type(payload_a["input"]["openai_input"]["input"]).__name__)
+        r = requests.post(RUNPOD_URL, json=payload_a, headers=headers, timeout=TIMEOUT)
+
+        if r.status_code >= 400:
+            logging.error("RunPod non-2xx (A): %s %s", r.status_code, r.text[:800])
+            # Jika error bertipe “cannot unmarshal array…” atau 422, coba skema B
+            if r.status_code in (400, 401, 403, 404, 409, 415, 422):
+                raise RuntimeError("TRY_B")
+            r.raise_for_status()
+
+        j = r.json()
         unwrapped, unwrap_err = _unwrap_provider_output(j)
         if unwrapped is not None:
             return unwrapped, None
+        logging.error("RunPod unwrap failed (A): %s; keys: %s", unwrap_err, list(j.keys()))
+        # lanjutkan ke Attempt B
+        raise RuntimeError("TRY_B")
 
-        # log bentuk aktual utk debug cepat
-        logging.error("RunPod unwrap failed: %s; top-level keys: %s", unwrap_err, list(j.keys()))
-        return None, unwrap_err or "Invalid RunPod response structure"
-    except Exception as e:
-        return None, f"RunPod forward error: {e}"
+    except Exception as e_a:
+        # ---- Attempt B: sebagian runtime mengharapkan 'input' langsung berisi openai_input (tanpa 'openai_route') ----
+        try:
+            payload_b = {
+                "input": {
+                    "input": texts,    # <- tetap list tapi sekarang di bawah 'input' (objek), bukan top-level
+                    "model": model_name
+                }
+            }
+            logging.info("Forwarding request to RunPod. Attempt B (plain openai_input). Reason: %s", e_a)
+            logging.debug("RunPod payload B (types): input=%s, input.input=%s",
+                          type(payload_b["input"]).__name__,
+                          type(payload_b["input"]["input"]).__name__)
+            r2 = requests.post(RUNPOD_URL, json=payload_b, headers=headers, timeout=TIMEOUT)
+
+            if not r2.ok:
+                logging.error("RunPod non-2xx (B): %s %s", r2.status_code, r2.text[:800])
+                r2.raise_for_status()
+
+            j2 = r2.json()
+            unwrapped2, unwrap_err2 = _unwrap_provider_output(j2)
+            if unwrapped2 is not None:
+                return unwrapped2, None
+            logging.error("RunPod unwrap failed (B): %s; keys: %s", unwrap_err2, list(j2.keys()))
+            return None, unwrap_err2 or "Invalid RunPod response structure"
+
+        except Exception as e_b:
+            return None, f"RunPod forward error: {e_b}"
+
 
 # ======================================================================================
 # Blueprint Flask (TETAP konteks awal)
