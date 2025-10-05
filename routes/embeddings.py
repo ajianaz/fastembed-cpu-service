@@ -175,30 +175,41 @@ def get_or_load_model(model_name):
 # ======================================================================================
 def _make_openai_embedding_response(model_name, embeddings_list, token_counts):
     """
-    Bentuk respons OpenAI-compatible.
-    embeddings_list: List[List[float]]
+    Bentuk respons OpenAI-compatible + usage lengkap.
+    embeddings_list: List[List[float] | np.ndarray]
     token_counts:    List[int]
     """
     data_items = []
+    dims = 0
     for i, vec in enumerate(embeddings_list):
-        # vec kemungkinan numpy array → pastikan list
         vlist = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+        if i == 0:
+            dims = len(vlist)
         data_items.append({
             "object": "embedding",
             "index": i,
             "embedding": vlist
         })
+
+    input_count = len(embeddings_list)
+    total_tokens = int(sum(token_counts))
+
     resp = {
         "object": "list",
         "model": model_name,
         "data": data_items,
         "usage": {
-            "token_counts": token_counts,             # tambahan custom (per input)
-            "prompt_tokens": int(sum(token_counts)),
-            "total_tokens": int(sum(token_counts)),
+            # tambahan sesuai permintaan
+            "input_text_count": input_count,
+            "dimensions": dims,
+            # yang sudah ada sebelumnya
+            "token_counts": token_counts,
+            "prompt_tokens": total_tokens,
+            "total_tokens": total_tokens,
         },
     }
     return resp
+
 
 def _enrich_external_openai_response(resp_json, token_counts):
     """
