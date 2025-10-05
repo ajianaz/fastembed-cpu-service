@@ -1,7 +1,7 @@
 Flask
 flask-cors
 gunicorn
-fastembed==0.5.1
+fastembed
 tiktoken
 requests
 python-dotenv
