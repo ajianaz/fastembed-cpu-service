@@ -1,6 +1,6 @@
 services:
   app:
-    container_name: fastembed-cpu-service
+    container_name: fastembed-service
     env_file:
       - .env
     build:
