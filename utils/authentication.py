@@ -1,22 +1,32 @@
-# utils/authentication.py (atau file auth kamu saat ini)
+# utils/authentication.py
 from flask import request, jsonify
 from functools import wraps
 import os
+from typing import Optional, Tuple
 from dotenv import load_dotenv
 
 load_dotenv()
 
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
 # === Flags dinamis ===
-AUTH_APIKEY_ENABLE = os.getenv("AUTH_APIKEY_ENABLE", "true").lower() == "true"
-AUTH_JWT_ENABLE    = os.getenv("AUTH_JWT_ENABLE", "true").lower() == "true"
+AUTH_APIKEY_ENABLE: bool = _env_bool("AUTH_APIKEY_ENABLE", True)
+AUTH_JWT_ENABLE: bool    = _env_bool("AUTH_JWT_ENABLE", True)
 
 # === API Key config ===
-API_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()}
-API_KEY_HEADER = os.getenv("API_KEY_HEADER", "X-API-Key")
+API_KEYS = frozenset(k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip())
+API_KEY_HEADER: str = os.getenv("API_KEY_HEADER", "X-API-Key")
 
 # === JWT config (opsional) ===
-JWT_SECRET = os.getenv("JWT_SECRET", "")
-JWT_ALGO   = os.getenv("JWT_ALGO", "HS256")
+JWT_SECRET: str = os.getenv("JWT_SECRET", "")
+JWT_ALGO: str   = os.getenv("JWT_ALGO", "HS256")
+JWT_AUDIENCE: Optional[str] = os.getenv("JWT_AUD", None)
+JWT_ISSUER: Optional[str]   = os.getenv("JWT_ISS", None)
+JWT_LEEWAY: int = int(os.getenv("JWT_LEEWAY", "0"))  # detik toleransi clock skew
 
 def _ok(data=None, code=200):
     return jsonify({"success": True, **(data or {})}), code
@@ -24,10 +34,10 @@ def _ok(data=None, code=200):
 def _unauth(msg="Unauthorized", code=401):
     return jsonify({"success": False, "message": msg}), code
 
-def _extract_bearer_token() -> str | None:
+def _extract_bearer_token() -> Optional[str]:
     """Ambil token dari Authorization: Bearer <token> (jika ada)."""
     auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
+    if isinstance(auth, str) and auth.startswith("Bearer "):
         return auth[len("Bearer "):].strip()
     return None
 
@@ -43,23 +53,42 @@ def _check_apikey_enabled() -> bool:
         return True
     return False
 
-def _check_jwt_enabled() -> tuple[bool, str]:
+def _check_jwt_enabled() -> Tuple[bool, str]:
     """Validasi JWT jika di-enable. Return (ok, err_msg)."""
     token = _extract_bearer_token()
     if not token:
         return False, "Missing Bearer token"
+
+    # Pastikan PyJWT ada
     try:
         import jwt  # PyJWT
     except Exception:
         return False, "JWT auth enabled but PyJWT not installed"
 
+    # Pastikan secret tersedia
+    if not JWT_SECRET:
+        return False, "JWT_SECRET is not configured"
+
+    decode_kwargs = {
+        "algorithms": [JWT_ALGO],
+        "leeway": JWT_LEEWAY,
+        "options": {
+            # Sesuaikan opsimu (misal bisa relax 'verify_aud' kalau tidak pakai audience)
+            "require": [],  # contoh: ["exp", "iat"] bila perlu
+        },
+    }
+    if JWT_AUDIENCE:
+        decode_kwargs["audience"] = JWT_AUDIENCE
+    if JWT_ISSUER:
+        decode_kwargs["issuer"] = JWT_ISSUER
+
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
-        # optional: bisa set request context user di sini kalau perlu
-        # g.user = {"sub": payload.get("sub"), "roles": payload.get("roles", [])}
+        # payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO], ...)
+        payload = jwt.decode(token, JWT_SECRET, **decode_kwargs)  # noqa: F841
+        # opsional: set g.user di sini
         return True, ""
     except Exception as e:
-        return False, f"Invalid token: {e}"
+        return False, "Invalid token: {}".format(e)
 
 def authenticate(f):
     """
@@ -76,32 +105,34 @@ def authenticate(f):
         if not AUTH_APIKEY_ENABLE and not AUTH_JWT_ENABLE:
             return f(*args, **kwargs)
 
+        # Bypass preflight CORS agar FE nggak ke-block
+        if request.method == "OPTIONS":
+            return _ok()
+
         apikey_ok = False
         jwt_ok = False
+        jwt_err = ""
 
         if AUTH_APIKEY_ENABLE:
             apikey_ok = _check_apikey_enabled()
 
         if AUTH_JWT_ENABLE:
             jwt_ok, jwt_err = _check_jwt_enabled()
-        else:
-            jwt_err = ""
 
         # Jika keduanya ON → cukup salah satu lolos
-        # Jika hanya satu ON → yang itu harus lolos
         if AUTH_APIKEY_ENABLE and AUTH_JWT_ENABLE:
             if apikey_ok or jwt_ok:
                 return f(*args, **kwargs)
-            # Prioritaskan pesan error yang paling relevan
             return _unauth(jwt_err or "Invalid API key")
 
+        # Jika hanya API key ON
         if AUTH_APIKEY_ENABLE and not AUTH_JWT_ENABLE:
             return f(*args, **kwargs) if apikey_ok else _unauth("Invalid API key")
 
+        # Jika hanya JWT ON
         if AUTH_JWT_ENABLE and not AUTH_APIKEY_ENABLE:
             return f(*args, **kwargs) if jwt_ok else _unauth(jwt_err or "Invalid token")
 
-        # Default (shouldn't reach)
+        # Default (harusnya tidak sampai sini)
         return _unauth()
-
     return decorated
