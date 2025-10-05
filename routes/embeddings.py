@@ -211,6 +211,7 @@ def _make_openai_embedding_response(model_name, embeddings_list, token_counts):
     return resp
 
 
+
 def _enrich_external_openai_response(resp_json, token_counts):
     """
     External (Modal/RunPod) biasanya sudah kirim OpenAI-format.
@@ -230,14 +231,10 @@ def _forward_to_modal(texts, model_name):
     if not (MODAL_ENABLE and MODAL_URL and MODAL_API_KEY):
         return None, "Modal disabled or not configured"
 
+    # 🔧 KIRIM BODY OPENAI-LIKE LANGSUNG (tanpa wrapper)
     payload = {
-        "input": {
-            "openai_route": "/v1/embeddings",
-            "openai_input": {
-                "input": texts,
-                "model": model_name
-            }
-        }
+        "input": texts,          # bisa str atau list[str]
+        "model": model_name
     }
     headers = {
         "Authorization": f"Bearer {MODAL_API_KEY}",
@@ -246,16 +243,89 @@ def _forward_to_modal(texts, model_name):
     try:
         logging.info("Forwarding request to Modal.")
         r = requests.post(MODAL_URL, json=payload, headers=headers, timeout=TIMEOUT)
-        r.raise_for_status()
+
+        # Log error body kalau bukan 2xx, supaya tau FastAPI validation-nya
+        if not r.ok:
+            logging.error("Modal non-2xx: %s %s", r.status_code, r.text[:800])
+            r.raise_for_status()
+
         j = r.json()
-        if "output" in j and isinstance(j["output"], list) and j["output"]:
-            return j["output"][0], None
-        # Jika provider sudah langsung return OpenAI-style tanpa 'output'
-        if "data" in j:
-            return j, None
-        return None, "Invalid Modal response structure"
+
+        # Modal kemungkinan sudah langsung OpenAI-format (punya "data")
+        # atau minimal dict yang bisa kita perkaya usage-nya
+        return j, None
     except Exception as e:
         return None, f"Modal forward error: {e}"
+
+def _unwrap_provider_output(j):
+    """
+    Normalisasi berbagai bentuk response provider jadi OpenAI-style dict.
+    Mengembalikan (dict_or_none, error_or_none).
+    """
+    if not isinstance(j, dict):
+        return None, "Provider response is not a JSON object"
+
+    # 0) Sudah OpenAI-style?
+    if "data" in j and isinstance(j["data"], list):
+        return j, None
+
+    # 1) Ada key 'output'?
+    if "output" in j:
+        o = j["output"]
+        # a) jika list, ambil elemen pertama
+        if isinstance(o, list) and o:
+            o0 = o[0]
+            # jika item lagi-lagi punya 'output', ambil yang dalam
+            if isinstance(o0, dict) and "output" in o0:
+                inner = o0["output"]
+                if isinstance(inner, dict) and "data" in inner:
+                    return inner, None
+                if isinstance(inner, dict):
+                    return inner, None
+                return None, "Unexpected nested 'output' structure (list->dict->non-dict)"
+            # kalau item sudah OpenAI-style
+            if isinstance(o0, dict) and "data" in o0:
+                return o0, None
+            if isinstance(o0, dict):
+                return o0, None
+            return None, "Unexpected 'output' list item type"
+        # b) jika dict langsung
+        if isinstance(o, dict):
+            # nested lagi?
+            if "output" in o and isinstance(o["output"], dict):
+                oo = o["output"]
+                if "data" in oo:
+                    return oo, None
+                return oo, None
+            # sudah OpenAI-style?
+            if "data" in o:
+                return o, None
+            return o, None
+        # c) jika string JSON
+        if isinstance(o, str):
+            try:
+                parsed = requests.utils.json.loads(o)
+                if isinstance(parsed, dict) and "data" in parsed:
+                    return parsed, None
+                if isinstance(parsed, dict):
+                    return parsed, None
+                return None, "String 'output' is not a JSON object"
+            except Exception as e:
+                return None, f"Failed to parse string 'output' as JSON: {e}"
+
+        return None, "Unsupported 'output' type"
+
+    # 2) Kadang provider taruh di key lain (mis. 'response')
+    if "response" in j and isinstance(j["response"], dict):
+        r = j["response"]
+        if "data" in r:
+            return r, None
+        return r, None
+
+    # 3) Last chance: sebagian provider taruh data langsung di root tanpa 'data'
+    # (biarkan caller yang menambah 'usage' dsb)
+    return j, None
+
 
 def _forward_to_runpod(texts, model_name):
     if not (RUNPOD_ENABLE and RUNPOD_URL and RUNPOD_API_KEY):
@@ -279,11 +349,14 @@ def _forward_to_runpod(texts, model_name):
         r = requests.post(RUNPOD_URL, json=payload, headers=headers, timeout=TIMEOUT)
         r.raise_for_status()
         j = r.json()
-        if "output" in j and isinstance(j["output"], list) and j["output"]:
-            return j["output"][0], None
-        if "data" in j:
-            return j, None
-        return None, "Invalid RunPod response structure"
+
+        unwrapped, unwrap_err = _unwrap_provider_output(j)
+        if unwrapped is not None:
+            return unwrapped, None
+
+        # log bentuk aktual utk debug cepat
+        logging.error("RunPod unwrap failed: %s; top-level keys: %s", unwrap_err, list(j.keys()))
+        return None, unwrap_err or "Invalid RunPod response structure"
     except Exception as e:
         return None, f"RunPod forward error: {e}"
 
