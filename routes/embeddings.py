@@ -1,3 +1,4 @@
+# routes/embeddings.py
 from flask import Blueprint, request, jsonify
 from fastembed import TextEmbedding
 from utils.authentication import authenticate
@@ -20,12 +21,15 @@ logging.basicConfig(
     ]
 )
 
-# Konfigurasi Environment
+# ======================================================================================
+# Konfigurasi Environment (TETAP: mempertahankan konteks aslimu)
+# ======================================================================================
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-AVAILABLE_MODELS = os.getenv("AVAILABLE_MODELS", "").split(",")
+# Hindari item kosong dan spasi berlebih
+AVAILABLE_MODELS = [m.strip() for m in os.getenv("AVAILABLE_MODELS", "").split(",") if m.strip()]
 MODEL_PATH = os.getenv("MODEL_PATH", "./models")
 MAX_CACHED_MODELS = int(os.getenv("MAX_CACHED_MODELS", 1))  # Batas jumlah model di cache
-TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 600))  # Default 10 menit
+TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 600))            # Default 10 menit
 RUNPOD_URL = os.getenv("RUNPOD_URL", "")
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY", "")
 RUNPOD_ENABLE = os.getenv("RUNPOD_ENABLE", "false").lower() == "true"
@@ -34,7 +38,83 @@ MAX_TEXTS_FOR_LOCAL_PROCESSING = int(os.getenv("MAX_TEXTS_FOR_LOCAL_PROCESSING",
 # Cache model yang dimuat
 LOADED_MODELS = {}
 
-# Fungsi validasi model pada startup
+# ======================================================================================
+# Tambahan: Registrasi Custom Model untuk FastEmbed (menjaga konteks, hanya menambah blok)
+# ======================================================================================
+def _register_custom_e5_and_sanitize_available_models():
+    """
+    - Coba daftarkan 'intfloat/multilingual-e5-base' sebagai custom model FastEmbed.
+    - Jika registrasi tidak didukung (versi fastembed lama), dan model itu tercantum
+      di AVAILABLE_MODELS, buang dari AVAILABLE_MODELS agar validasi startup tidak gagal.
+    """
+    global AVAILABLE_MODELS
+
+    target_model = "intfloat/multilingual-e5-base"
+    needs_e5 = any(m == target_model for m in AVAILABLE_MODELS) or (DEFAULT_MODEL == target_model)
+
+    if not needs_e5:
+        # Tidak perlu registrasi jika tidak dipakai.
+        return
+
+    try:
+        # Kelas-kelas ini tersedia di fastembed versi tertentu.
+        from fastembed.common.model_description import PoolingType, ModelSource
+    except Exception as e:
+        logging.warning(
+            "fastembed.common.model_description tidak tersedia (%s). "
+            "Lewati registrasi custom e5.", e
+        )
+        # Agar validate_models tidak gagal, hapus dari daftar jika ada
+        if target_model in AVAILABLE_MODELS:
+            AVAILABLE_MODELS = [m for m in AVAILABLE_MODELS if m != target_model]
+            logging.warning(
+                "Menghapus '%s' dari AVAILABLE_MODELS karena registrasi tidak tersedia.",
+                target_model
+            )
+        # Jika DEFAULT_MODEL adalah e5, biarkan validation nanti yang mengangkat error jelas
+        return
+
+    # Cek apakah add_custom_model ada
+    if not hasattr(TextEmbedding, "add_custom_model"):
+        logging.warning(
+            "FastEmbed tidak mendukung add_custom_model() pada versi saat ini. "
+            "Lewati registrasi custom e5."
+        )
+        if target_model in AVAILABLE_MODELS:
+            AVAILABLE_MODELS = [m for m in AVAILABLE_MODELS if m != target_model]
+            logging.warning(
+                "Menghapus '%s' dari AVAILABLE_MODELS karena add_custom_model() tidak ada.",
+                target_model
+            )
+        return
+
+    try:
+        # Registrasi model custom e5
+        TextEmbedding.add_custom_model(
+            model=target_model,
+            pooling=PoolingType.MEAN,                # e5 pakai mean pooling
+            normalization=True,                      # cosine-ready
+            sources=ModelSource(hf=target_model),
+            model_file="onnx/model.onnx",            # path ONNX pada repo HF
+            dim=768,
+        )
+        logging.info("Custom model '%s' terdaftar di FastEmbed.", target_model)
+    except Exception as e:
+        logging.warning("Gagal register custom model e5: %s", e)
+        # Untuk mencegah crash saat validasi, buang dari AVAILABLE_MODELS jika ada
+        if target_model in AVAILABLE_MODELS:
+            AVAILABLE_MODELS = [m for m in AVAILABLE_MODELS if m != target_model]
+            logging.warning(
+                "Menghapus '%s' dari AVAILABLE_MODELS karena registrasi gagal.",
+                target_model
+            )
+
+# PANGGIL registrasi custom SEBELUM validasi model/instansiasi TextEmbedding
+_register_custom_e5_and_sanitize_available_models()
+
+# ======================================================================================
+# Fungsi validasi model pada startup (TETAP sesuai konteks awal)
+# ======================================================================================
 def validate_models(available_models, model_path):
     """
     Validates all available models at application startup.
@@ -48,14 +128,16 @@ def validate_models(available_models, model_path):
             logging.error(f"Model '{model_name}' cannot be loaded: {str(e)}")
             raise ValueError(f"Invalid model '{model_name}' in AVAILABLE_MODELS: {str(e)}")
 
-# Validasi model pada startup
+# Validasi model pada startup (TETAP: akan raise jika ada yang invalid)
 try:
     validate_models(AVAILABLE_MODELS, MODEL_PATH)
 except ValueError as e:
     logging.critical(f"Model validation failed: {str(e)}")
     raise e
 
-# Fungsi untuk memuat atau mengambil model
+# ======================================================================================
+# Loader model (TETAP konteks awal, hanya variabel globalnya yang sama)
+# ======================================================================================
 def get_or_load_model(model_name):
     """
     Retrieve or load an embedding model. Validate against allowed models.
@@ -83,15 +165,18 @@ def get_or_load_model(model_name):
         # Hapus model lama jika cache penuh
         if len(LOADED_MODELS) > MAX_CACHED_MODELS:
             oldest_model = next(iter(LOADED_MODELS))
-            del LOADED_MODELS[oldest_model]
-            logging.warning(f"Removed oldest model from cache: {oldest_model}")
+            if oldest_model != model_name:
+                del LOADED_MODELS[oldest_model]
+                logging.warning(f"Removed oldest model from cache: {oldest_model}")
 
         return model
     except Exception as e:
         logging.error(f"Failed to load model '{model_name}': {str(e)}")
         raise Exception(f"Failed to load model '{model_name}': {str(e)}")
 
-# Blueprint Flask
+# ======================================================================================
+# Blueprint Flask (TETAP konteks awal)
+# ======================================================================================
 embeddings_bp = Blueprint("embeddings", __name__)
 
 @embeddings_bp.route("/v1/embeddings", methods=["POST"])
@@ -119,7 +204,7 @@ def embed():
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
 
-        # Handle single or batch text input
+        # Handle single atau batch
         texts = input_text if isinstance(input_text, list) else [input_text]
 
         if len(texts) > MAX_TEXTS_FOR_LOCAL_PROCESSING:
@@ -143,7 +228,7 @@ def embed():
                     }
                 }
 
-                # Forward the request to the external embedding service
+                # Forward request ke RunPod
                 headers = {
                     "Authorization": f"Bearer {RUNPOD_API_KEY}",
                     "Content-Type": "application/json",
@@ -154,23 +239,22 @@ def embed():
                 logging.info("Response received from RunPod.")
                 runpod_response = response.json()  # Parse JSON response
 
-                # Periksa apakah 'output' ada dalam respons
+                # Validasi struktur response
                 if "output" not in runpod_response or not isinstance(runpod_response["output"], list):
                     logging.error("Invalid RunPod response structure.")
                     return jsonify({"error": "Invalid RunPod response structure"}), 500
 
-                # Ambil elemen pertama dari 'output' dan kembalikan sebagai respons
+                # Ambil elemen pertama
                 return jsonify(runpod_response["output"][0]), response.status_code
-                # return jsonify(response.output[0].json()), response.status_code
             except requests.exceptions.RequestException as e:
                 logging.error(f"Failed to forward request to RunPod: {str(e)}")
                 return jsonify({"error": f"Failed to forward request: {str(e)}"}), 500
 
-        # Generate embeddings locally
+        # Generate embeddings lokal
         logging.info(f"Generating embeddings using model: {model_name}")
         embeddings = list(model.embed(texts))  # Convert generator to list
 
-        # Calculate token counts for each text
+        # Hitung token count per text
         token_counts = [calculate_token_count(text, model="gpt-4") for text in texts]
 
         # Format response
